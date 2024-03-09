@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: ocpdockerhubinteg/namespacelabel-assignment
-  newTag: v10
+  newTag: merging-multiplev5

@@ -17,8 +17,6 @@ package controller
 
 import (
 	"context"
-	"sort"
-
 	danaiov1alpha1 "dana.io/namespacelabel/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -54,68 +52,60 @@ func isProtected(label string) bool {
 }
 
 func (r *NamespaceLabelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_log := log.FromContext(ctx)
+    _log := log.FromContext(ctx)
 
-	// List all NamespaceLabel CRs for the namespace
-	namespaceLabelList := &danaiov1alpha1.NamespaceLabelList{}
-	if err := r.List(ctx, namespaceLabelList, client.InNamespace(req.Namespace)); err != nil {
-		_log.Error(err, "unable to list NamespaceLabel CRs for namespace", "Namespace", req.Namespace)
-		return ctrl.Result{}, err
-	}
+    // Fetch the target Namespace.
+    var namespace corev1.Namespace
+    if err := r.Get(ctx, client.ObjectKey{Name: req.Namespace}, &namespace); err != nil {
+        return ctrl.Result{}, err
+    }
 
-	// Sort NamespaceLabel CRs by creation timestamp to prioritize the latest
-	sort.Slice(namespaceLabelList.Items, func(i, j int) bool {
-		return namespaceLabelList.Items[i].CreationTimestamp.After(namespaceLabelList.Items[j].CreationTimestamp.Time)
-	})
+    // List all NamespaceLabel CRs for the namespace.
+    namespaceLabelList := &danaiov1alpha1.NamespaceLabelList{}
+    if err := r.List(ctx, namespaceLabelList, client.InNamespace(req.Namespace)); err != nil {
+        _log.Error(err, "unable to list NamespaceLabel CRs for namespace", "Namespace", req.Namespace)
+        return ctrl.Result{}, err
+    }
 
-	// Merge labels from the most recent NamespaceLabel CR, overriding older labels
-	finalLabels := make(map[string]string)
-	if len(namespaceLabelList.Items) > 0 {
-		latestCR := namespaceLabelList.Items[0]
-		for key, value := range latestCR.Spec.Labels {
-			finalLabels[key] = value
-		}
-	}
+    // Consolidate labels from all NamespaceLabel CRs.
+    allLabels := make(map[string]string)
+    for _, nl := range namespaceLabelList.Items {
+        for key, value := range nl.Spec.Labels {
+            if isProtected(key) {
+                continue
+            }
+            allLabels[key] = value // This will naturally handle updates.
+        }
+    }
 
-	// Fetch the target Namespace
-	var namespace corev1.Namespace
-	if err := r.Get(ctx, client.ObjectKey{Name: req.Namespace}, &namespace); err != nil {
-		return ctrl.Result{}, err
-	}
+    // Apply labels to the namespace, removing any that no longer exist in NamespaceLabel CRs.
+    needsUpdate := false
+    for key, value := range allLabels {
+        if namespace.Labels[key] != value {
+            namespace.Labels[key] = value
+            needsUpdate = true
+        }
+    }
 
-	// Initialize namespace labels if nil
-	if namespace.Labels == nil {
-		namespace.Labels = map[string]string{}
-	}
-	// Remove all existing labels from the namespace if they are not protected
-	for label := range namespace.Labels {
-		if !isProtected(label) {
-			delete(namespace.Labels, label)
-		}
-	}
+    // Remove labels from the namespace that are not present in any NamespaceLabel CRs.
+    for key := range namespace.Labels {
+        if _, found := allLabels[key]; !found && !isProtected(key) {
+            delete(namespace.Labels, key)
+            needsUpdate = true
+        }
+    }
 
-	// Merge labels from the most recent NamespaceLabel CR, overriding older labels
-	// Skip adding labels that are protected - from the list.
-	if len(namespaceLabelList.Items) > 0 {
-		latestCR := namespaceLabelList.Items[0]
-		for key, value := range latestCR.Spec.Labels {
-			if !isProtected(key) {
-				namespace.Labels[key] = value
-			}
-		}
-	}
+    // Update the namespace if there were any changes.
+    if needsUpdate {
+        if err := r.Update(ctx, &namespace); err != nil {
+            _log.Error(err, "Failed to update Namespace labels", "Namespace", namespace.Name)
+            return ctrl.Result{}, err
+        }
+    }
 
-	// Emit an event if the namespace labels are about to be overridden
-	r.EventRecorder.Event(&namespace, corev1.EventTypeWarning, "Override", "This NamespaceLabel CR will override existing label configurations due to its more recent creation timestamp.")
-
-	// Update the namespace labels
-	if err := r.Update(ctx, &namespace); err != nil {
-		_log.Error(err, "Failed to update Namespace labels", "Namespace", namespace.Name)
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
+    return ctrl.Result{}, nil
 }
+
 
 func (r *NamespaceLabelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Ensure the EventRecorder is initialized here or wherever appropriate
