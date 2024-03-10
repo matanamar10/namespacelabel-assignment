@@ -60,6 +60,11 @@ func (r *NamespaceLabelReconciler) Reconcile(ctx context.Context, req ctrl.Reque
         return ctrl.Result{}, err
     }
 
+    // Ensure namespace labels map is initialized.
+    if namespace.Labels == nil {
+        namespace.Labels = make(map[string]string)
+    }
+
     // List all NamespaceLabel CRs for the namespace.
     namespaceLabelList := &danaiov1alpha1.NamespaceLabelList{}
     if err := r.List(ctx, namespaceLabelList, client.InNamespace(req.Namespace)); err != nil {
@@ -71,17 +76,18 @@ func (r *NamespaceLabelReconciler) Reconcile(ctx context.Context, req ctrl.Reque
     allLabels := make(map[string]string)
     for _, nl := range namespaceLabelList.Items {
         for key, value := range nl.Spec.Labels {
+            // Skip if the label key is protected.
             if isProtected(key) {
                 continue
             }
-            allLabels[key] = value // This will naturally handle updates.
+            allLabels[key] = value
         }
     }
 
     // Apply labels to the namespace, removing any that no longer exist in NamespaceLabel CRs.
     needsUpdate := false
     for key, value := range allLabels {
-        if namespace.Labels[key] != value {
+        if val, exists := namespace.Labels[key]; !exists || val != value {
             namespace.Labels[key] = value
             needsUpdate = true
         }
